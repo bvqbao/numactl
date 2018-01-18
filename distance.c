@@ -22,78 +22,29 @@
 #include <errno.h>
 #include "numa.h"
 #include "numaint.h"
+#include "numaif.h"
 
 static int distance_numnodes;
 static int *distance_table;
 
-static void parse_numbers(char *s, int *iptr)
-{
-	int i, d, j;
-	char *end;
-	int maxnode = numa_max_node();
-	int numnodes = 0;
-
-	for (i = 0; i <= maxnode; i++)
-		if (numa_bitmask_isbitset(numa_nodes_ptr, i))
-			numnodes++;
-
-	for (i = 0, j = 0; i <= maxnode; i++, j++) {
-		d = strtoul(s, &end, 0);
-		/* Skip unavailable nodes */
-		while (j<=maxnode && !numa_bitmask_isbitset(numa_nodes_ptr, j))
-			j++;
-		if (s == end)
-			break;
-		*(iptr+j) = d;
-		s = end;
-	}
-}
-
 static int read_distance_table(void)
 {
-	int nd, len;
-	char *line = NULL;
-	size_t linelen = 0;
-	int maxnode = numa_max_node() + 1;
-	int *table = NULL;
-	int err = -1;
+	int err = 0;
+	int maxnode = XEN_NUM_NODES;
+	int *table = calloc(maxnode * maxnode, sizeof(int));
 
-	for (nd = 0;; nd++) {
-		char fn[100];
-		FILE *dfh;
-		sprintf(fn, "/sys/devices/system/node/node%d/distance", nd);
-		dfh = fopen(fn, "r");
-		if (!dfh) {
-			if (errno == ENOENT)
-				err = 0;
-			if (!err && nd<maxnode)
-				continue;
-			else
-				break;
-		}
-		len = getdelim(&line, &linelen, '\n', dfh);
-		fclose(dfh);
-		if (len <= 0)
-			break;
+	if (table)
+		err = get_numa_info(NULL, NULL, table);
+	else
+		err = ENOMEM;
 
-		if (!table) {
-			table = calloc(maxnode * maxnode, sizeof(int));
-			if (!table) {
-				errno = ENOMEM;
-				break;
-			}
-		}
-
-		parse_numbers(line, table + nd * maxnode);
-	}
-	free(line);
 	if (err)  {
-		numa_warn(W_distance,
-			  "Cannot parse distance information in sysfs: %s",
-			  strerror(errno));
+		numa_warn(W_distance, 
+			  "Cannot get distance information (err=%d)", err);
 		free(table);
 		return err;
 	}
+
 	/* Update the global table pointer.  Race window here with
 	   other threads, but in the worst case we leak one distance
 	   array one time, which is tolerable. This avoids a

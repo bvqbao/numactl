@@ -8,6 +8,8 @@ extern "C" {
 /* Kernel interface for NUMA API */
 
 /* System calls */
+extern long get_numa_info(int *maxnode, int *nodemask_sz, int *dist_table);
+extern long get_cpus_for_node(int node, unsigned long *cpumask);
 extern long get_mempolicy(int *mode, unsigned long *nmask,
 			unsigned long maxnode, void *addr, unsigned flags);
 extern long mbind(void *start, unsigned long len, int mode,

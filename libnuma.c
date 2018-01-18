@@ -304,6 +304,12 @@ static void dombind(void *mem, size_t size, int pol, struct bitmask *bmp)
 		numa_error("mbind"); 
 } 
 
+static void getnumainfo(int *maxnode, int *msize, int *dist_table)
+{
+	if(get_numa_info(maxnode, msize, dist_table) < 0)
+		numa_error("get_numa_info");
+}
+
 /* (undocumented) */
 /* gives the wrong answer for hugetlbfs mappings. */
 int numa_pagesize(void)
@@ -324,49 +330,44 @@ make_internal_alias(numa_pagesize);
 static void
 set_configured_nodes(void)
 {
-	DIR *d;
-	struct dirent *de;
-	long long freep;
+	int nd;
 
 	numa_memnode_ptr = numa_allocate_nodemask();
 	numa_nodes_ptr = numa_allocate_nodemask();
 
-	d = opendir("/sys/devices/system/node");
-	if (!d) {
-		maxconfigurednode = 0;
-	} else {
-		while ((de = readdir(d)) != NULL) {
-			int nd;
-			if (strncmp(de->d_name, "node", 4))
-				continue;
-			nd = strtoul(de->d_name+4, NULL, 0);
-			numa_bitmask_setbit(numa_nodes_ptr, nd);
-			if (numa_node_size64(nd, &freep) > 0)
-				numa_bitmask_setbit(numa_memnode_ptr, nd);
-			if (maxconfigurednode < nd)
-				maxconfigurednode = nd;
-		}
-		closedir(d);
+	maxconfigurednode = 0;
+	getnumainfo(&maxconfigurednode, NULL, NULL);
+
+	for (nd = 0; nd <= maxconfigurednode; nd++) {
+		numa_bitmask_setbit(numa_nodes_ptr, nd);
+		/* if (numa_node_size64(nd, &freep) > 0) */
+		numa_bitmask_setbit(numa_memnode_ptr, nd);
 	}
+
 }
 
 /*
  * Convert the string length of an ascii hex mask to the number
  * of bits represented by that mask.
  */
+/*
 static int s2nbits(const char *s)
 {
 	return strlen(s) * 32 / 9;
 }
+*/
 
 /* Is string 'pre' a prefix of string 's'? */
+/*
 static int strprefix(const char *s, const char *pre)
 {
 	return strncmp(s, pre, strlen(pre)) == 0;
 }
+*/
 
 static const char *mask_size_file = "/proc/self/status";
-static const char *nodemask_prefix = "Mems_allowed:\t";
+/* static const char *nodemask_prefix = "Mems_allowed:\t"; */
+
 /*
  * (do this the way Paul Jackson's libcpuset does it)
  * The nodemask values in /proc/self/status are in an
@@ -376,22 +377,8 @@ static const char *nodemask_prefix = "Mems_allowed:\t";
 static void
 set_nodemask_size(void)
 {
-	FILE *fp;
-	char *buf = NULL;
-	size_t bufsize = 0;
+	getnumainfo(NULL, &nodemask_sz, NULL);
 
-	if ((fp = fopen(mask_size_file, "r")) == NULL)
-		goto done;
-
-	while (getline(&buf, &bufsize, fp) > 0) {
-		if (strprefix(buf, nodemask_prefix)) {
-			nodemask_sz = s2nbits(buf + strlen(nodemask_prefix));
-			break;
-		}
-	}
-	free(buf);
-	fclose(fp);
-done:
 	if (nodemask_sz == 0) {/* fall back on error */
 		int pol;
 		unsigned long *mask = NULL;
@@ -496,9 +483,11 @@ set_task_constraints(void)
 		if (strncmp(buffer,"Cpus_allowed:",13) == 0)
 			numproccpu = read_mask(mask, numa_all_cpus_ptr);
 
+		/*
 		if (strncmp(buffer,"Mems_allowed:",13) == 0) {
 			numprocnode = read_mask(mask, numa_all_nodes_ptr);
 		}
+		*/
 	}
 	fclose(f);
 	free(buffer);
@@ -1255,10 +1244,6 @@ int
 numa_node_to_cpus_v1(int node, unsigned long *buffer, int bufferlen)
 {
 	int err = 0;
-	char fn[64];
-	FILE *f;
-	char *line = NULL;
-	size_t len = 0;
 	struct bitmask bitmask;
 	int buflen_needed;
 	unsigned long *mask;
@@ -1272,52 +1257,26 @@ numa_node_to_cpus_v1(int node, unsigned long *buffer, int bufferlen)
 	}
 	if (bufferlen > buflen_needed)
 		memset(buffer, 0, bufferlen);
-	if (node_cpu_mask_v1[node]) {
-		memcpy(buffer, node_cpu_mask_v1[node], buflen_needed);
-		return 0;
-	}
 
 	mask = malloc(buflen_needed);
 	if (!mask)
 		mask = (unsigned long *)buffer;
 	memset(mask, 0, buflen_needed);
 
-	sprintf(fn, "/sys/devices/system/node/node%d/cpumap", node);
-	f = fopen(fn, "r");
-	if (!f || getdelim(&line, &len, '\n', f) < 1) {
-		if (numa_bitmask_isbitset(numa_nodes_ptr, node)) {
-			numa_warn(W_nosysfs2,
-			   "/sys not mounted or invalid. Assuming one node: %s",
-				  strerror(errno));
-			numa_warn(W_nosysfs2,
-			   "(cannot open or correctly parse %s)", fn);
-		}
-		bitmask.maskp = (unsigned long *)mask;
-		bitmask.size  = buflen_needed * 8;
-		numa_bitmask_setall(&bitmask);
-		err = -1;
-	}
-	if (f)
-		fclose(f);
-
-	if (line && (numa_parse_bitmap_v1(line, mask, ncpus) < 0)) {
+	if (get_cpus_for_node(node, mask) < 0) {
 		numa_warn(W_cpumap, "Cannot parse cpumap. Assuming one node");
 		bitmask.maskp = (unsigned long *)mask;
 		bitmask.size  = buflen_needed * 8;
 		numa_bitmask_setall(&bitmask);
 		err = -1;
-	}
+	}	
 
-	free(line);
 	memcpy(buffer, mask, buflen_needed);
 
-	/* slightly racy, see above */
-	if (node_cpu_mask_v1[node]) {
-		if (mask != buffer)
-			free(mask);
-	} else {
-		node_cpu_mask_v1[node] = mask;
-	}
+	if (node_cpu_mask_v1[node])
+		free(node_cpu_mask_v1[node]);
+	node_cpu_mask_v1[node] = mask;
+
 	return err;
 }
 __asm__(".symver numa_node_to_cpus_v1,numa_node_to_cpus@libnuma_1.1");
@@ -1334,10 +1293,9 @@ int
 numa_node_to_cpus_v2(int node, struct bitmask *buffer)
 {
 	int err = 0;
-	int nnodes = numa_max_node();
-	char fn[64], *line = NULL;
-	FILE *f; 
+	int nnodes = numa_max_node();	
 	size_t len = 0; 
+	unsigned long *mask_buf;
 	struct bitmask *mask;
 
 	if (!node_cpu_mask_v2)
@@ -1349,59 +1307,26 @@ numa_node_to_cpus_v2(int node, struct bitmask *buffer)
 	}
 	numa_bitmask_clearall(buffer);
 
-	if (node_cpu_mask_v2[node]) {
-		/* have already constructed a mask for this node */
-		if (buffer->size < node_cpu_mask_v2[node]->size) {
-			errno = EINVAL;
-			numa_error("map size mismatch");
-			return -1;
-		}
-		copy_bitmask_to_bitmask(node_cpu_mask_v2[node], buffer);
-		return 0;
-	}
+        mask = numa_allocate_cpumask();
+	
+	len = CPU_BYTES(numa_num_possible_cpus());
+	mask_buf = malloc(len);
 
-	/* need a new mask for this node */
-	mask = numa_allocate_cpumask();
-
-	/* this is a kernel cpumask_t (see node_read_cpumap()) */
-	sprintf(fn, "/sys/devices/system/node/node%d/cpumap", node); 
-	f = fopen(fn, "r"); 
-	if (!f || getdelim(&line, &len, '\n', f) < 1) { 
-		if (numa_bitmask_isbitset(numa_nodes_ptr, node)) {
-			numa_warn(W_nosysfs2,
-			   "/sys not mounted or invalid. Assuming one node: %s",
-				  strerror(errno)); 
-			numa_warn(W_nosysfs2,
-			   "(cannot open or correctly parse %s)", fn);
-		}
-		numa_bitmask_setall(mask);
-		err = -1;
-	} 
-	if (f)
-		fclose(f);
-
-	if (line && (numa_parse_bitmap_v2(line, mask) < 0)) {
+	if (get_cpus_for_node(node, mask_buf) < 0) {
 		numa_warn(W_cpumap, "Cannot parse cpumap. Assuming one node");
 		numa_bitmask_setall(mask);
 		err = -1;
+	} else {
+		mask->maskp = mask_buf;
+		mask->size = len;
 	}
 
-	free(line);
 	copy_bitmask_to_bitmask(mask, buffer);
 
-	/* slightly racy, see above */ 
-	/* save the mask we created */
-	if (node_cpu_mask_v2[node]) {
-		/* how could this be? */
-		if (mask != buffer)
-			numa_bitmask_free(mask);
-	} else {
-		/* we don't want to cache faulty result */
-		if (!err)
-			node_cpu_mask_v2[node] = mask;
-		else
-			numa_bitmask_free(mask);
-	}
+        if (node_cpu_mask_v2[node])
+		numa_bitmask_free(node_cpu_mask_v2[node]);
+	node_cpu_mask_v2[node] = mask;
+	
 	return err; 
 }
 __asm__(".symver numa_node_to_cpus_v2,numa_node_to_cpus@@libnuma_1.2");

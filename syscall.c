@@ -25,7 +25,8 @@
 
 #if !defined(__NR_mbind) || !defined(__NR_set_mempolicy) || \
     !defined(__NR_get_mempolicy) || !defined(__NR_migrate_pages) || \
-    !defined(__NR_move_pages)
+    !defined(__NR_move_pages) || !defined(__NR_get_numa_info) || \
+    !defined(__NR_get_cpus_for_node)
 
 #if defined(__x86_64__)
 
@@ -39,6 +40,8 @@
 #define __NR_get_mempolicy 239
 #define __NR_migrate_pages 256
 #define __NR_move_pages 279
+#define __NR_get_numa_info 333
+#define __NR_get_cpus_for_node	334
 
 #elif defined(__ia64__)
 #define __NR_sched_setaffinity    1231
@@ -184,6 +187,16 @@ long syscall6(long call, long a, long b, long c, long d, long e, long f)
 #else
 #define syscall6 syscall
 #endif
+
+long WEAK get_numa_info(int *maxnode, int *nodemask_sz, int *dist_table)
+{
+	return syscall(__NR_get_numa_info, maxnode, nodemask_sz, dist_table);
+}
+
+long WEAK get_cpus_for_node(int node, unsigned long *cpumask)
+{
+	return syscall(__NR_get_cpus_for_node, node, cpumask);
+}
 
 long WEAK get_mempolicy(int *policy, unsigned long *nmask,
 				unsigned long maxnode, void *addr,

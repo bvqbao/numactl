@@ -33,6 +33,8 @@
 #define NUMA_NUM_NODES  2048
 #endif
 
+#define XEN_NUM_NODES	16
+
 #ifdef __cplusplus
 extern "C" {
 #endif
